@@ -19,6 +19,11 @@ func main() {
 	if err := os.MkdirAll("uploads", 0755); err != nil {
 		log.Fatal("❌ Không tạo được thư mục uploads: ", err)
 	}
+	// MkdirAll áp umask của user hệ thống → có thể ra 750 thay vì 755.
+	// Ép lại tường minh để Nginx (www-data) luôn đọc được ảnh.
+	if err := os.Chmod("uploads", 0755); err != nil {
+		log.Fatal("❌ Không chỉnh được quyền uploads: ", err)
+	}
 
 	r := gin.Default()
 	r.SetTrustedProxies([]string{"127.0.0.1"}) // chỉ tin Nginx chạy cùng máy
