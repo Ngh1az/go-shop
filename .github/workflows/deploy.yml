@@ -1,0 +1,146 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------- 1. Build backend ----------
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Test backend
+        working-directory: backend
+        run: go test ./...
+
+      - name: Build binary Linux
+        working-directory: backend
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o server .
+
+      # ---------- 2. Build frontend ----------
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # ---------- 3. Dọn thư mục tạm ----------
+      - name: Dọn /tmp trước khi copy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_PORT }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: rm -rf /tmp/goshop-deploy
+
+      # ---------- 4. Copy lên VPS ----------
+      - name: Copy binary + dist lên VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_PORT }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "backend/server,frontend/dist"
+          target: /tmp/goshop-deploy
+
+      # ---------- 5. Kích hoạt bản mới ----------
+      - name: Restart service
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_PORT }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+
+            mv /tmp/goshop-deploy/backend/server /var/www/go-shop/server.new
+            chmod 755 /var/www/go-shop/server.new
+            mv -f /var/www/go-shop/server.new /var/www/go-shop/server
+
+            rm -rf /var/www/go-shop/dist
+            mv /tmp/goshop-deploy/frontend/dist /var/www/go-shop/dist
+            chown -R root:root /var/www/go-shop/dist
+            rm -rf /tmp/goshop-deploy
+
+            systemctl restart go-shop
+
+            for i in $(seq 1 15); do
+              if curl -fs http://127.0.0.1:8080/api/health > /dev/null; then
+                echo "✅ Health check OK sau ${i} lần thử"
+                exit 0
+              fi
+              sleep 2
+            done
+
+            echo "❌ Health check thất bại — log 50 dòng cuối:"
+            journalctl -u go-shop -n 50 --no-pager
+            exit 1
+
+      # ---------- 6. Báo kết quả về Discord ----------
+      - name: Thông báo Discord
+        if: always()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          STATUS: ${{ job.status }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SITE: https://go.nghiatech.click
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "Chưa cấu hình DISCORD_WEBHOOK, bỏ qua thông báo"
+            exit 0
+          fi
+
+          if [ "$STATUS" = "success" ]; then
+            TITLE="✅ Deploy thành công"
+            COLOR=5763719
+          else
+            TITLE="❌ Deploy thất bại"
+            COLOR=15548997
+          fi
+
+          COMMIT_MSG="${COMMIT_MSG:-(không có nội dung commit)}"
+
+          jq -n \
+            --arg title "$TITLE" \
+            --arg msg "$COMMIT_MSG" \
+            --arg actor "$ACTOR" \
+            --arg run "$RUN_URL" \
+            --arg site "$SITE" \
+            --argjson color "$COLOR" \
+            '{
+              embeds: [{
+                title: $title,
+                url: $run,
+                color: $color,
+                fields: [
+                  {name: "Commit", value: ($msg[0:900])},
+                  {name: "Người push", value: $actor, inline: true},
+                  {name: "Website", value: $site, inline: true}
+                ]
+              }]
+            }' > payload.json
+
+          curl -sS -X POST -H "Content-Type: application/json" \
+            -d @payload.json "$WEBHOOK"
