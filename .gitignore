@@ -1,0 +1,19 @@
+# Dependencies & build
+node_modules/
+dist/
+backend/server
+backend/server.exe
+
+# Bí mật — TUYỆT ĐỐI không commit
+.env
+
+# Ảnh người dùng upload (giữ lại thư mục rỗng)
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Khác
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
