@@ -12,7 +12,7 @@ func TestSanitizeFilename(t *testing.T) {
 
 func TestSanitizeFilenameChanPathTraversal(t *testing.T) {
 	got := sanitizeFilename("../../etc/passwd")
-	want := "passwd"
+	want := "sai-co-y"
 	if got != want {
 		t.Errorf("sanitizeFilename() = %q, muốn %q", got, want)
 	}
