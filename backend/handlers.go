@@ -48,7 +48,9 @@ func saveImage(c *gin.Context, fileHeader *multipart.FileHeader) (string, error)
 	name := fmt.Sprintf("%d-%s", time.Now().UnixNano(), sanitizeFilename(fileHeader.Filename))
 	dst := filepath.Join("uploads", name)
 
-	if err := c.SaveUploadedFile(fileHeader, dst); err != nil {
+	// Gin tự chmod thư mục đích mỗi lần upload (mặc định 0750 nếu không truyền perm)
+	// → phải truyền 0755 tường minh, nếu không Nginx (www-data) mất quyền đọc ảnh sau upload kế tiếp
+	if err := c.SaveUploadedFile(fileHeader, dst, 0755); err != nil {
 		return "", err
 	}
 	return "/uploads/" + name, nil
